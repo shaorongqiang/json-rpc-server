@@ -1,8 +1,7 @@
 use crate::{RPCError, RPCRequest, RPCResponse, RPCResult};
 use anyhow::{anyhow, Result};
-use hyper::{
-    body, client::HttpConnector, http::HeaderValue, Body, Client, Request, StatusCode, Uri,
-};
+use hyper::{body, http::HeaderValue, Body, Client, Request, StatusCode, Uri};
+use hyper_tls::HttpsConnector;
 use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
 
@@ -106,7 +105,7 @@ pub async fn http_post(
     body: &[u8],
     headers: Option<&[(&'static str, String)]>,
 ) -> Result<(StatusCode, Vec<u8>)> {
-    let connector = HttpConnector::new();
+    let connector = HttpsConnector::new();
 
     let client = Client::builder().build(connector);
 
@@ -141,7 +140,7 @@ pub async fn http_get(
     body: &[u8],
     headers: Option<&[(&'static str, String)]>,
 ) -> Result<(StatusCode, Vec<u8>)> {
-    let connector = HttpConnector::new();
+    let connector = HttpsConnector::new();
 
     let client = Client::builder().build(connector);
 
