@@ -1,0 +1,12 @@
+[package]
+name = "client"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+tokio = { version = "1.0", features = ["full"] }
+anyhow = "1.0.72"
+json-rpc-server = { path = "../../" }
+serde_json = "1.0.104" 
+ 
