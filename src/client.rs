@@ -1,9 +1,14 @@
-use crate::{RPCError, RPCRequest, RPCResponse, RPCResult};
-use anyhow::{anyhow, Result};
-use hyper::{body, http::HeaderValue, Body, Client, Request, StatusCode, Uri};
-use hyper_tls::HttpsConnector;
-use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
+
+use anyhow::{anyhow, Result};
+use bytes::Bytes;
+use http_body_util::{BodyExt, Full};
+use hyper::{header::HeaderValue, Request, StatusCode, Uri};
+use hyper_tls::HttpsConnector;
+use hyper_util::{client::legacy::Client, rt::TokioExecutor};
+use serde::{Deserialize, Serialize};
+
+use crate::{RPCError, RPCRequest, RPCResponse, RPCResult};
 
 pub async fn call<P, R>(
     url: &str,
@@ -17,7 +22,10 @@ where
 {
     let req = RPCRequest::new(method, params);
     let s = serde_json::to_string(&req).map_err(|e| RPCError::internal_error(format!("{e:?}")))?;
-    let mut headers = vec![("content-type", String::from("application/json"))];
+    let mut headers = vec![
+        ("content-type", String::from("application/json")),
+        ("User-Agent", String::from("hyper-client")),
+    ];
     if let Some(t) = auth {
         let r = format!("Bearer {}", t);
         headers.push(("Authorization", r));
@@ -105,25 +113,9 @@ pub async fn http_post(
     body: &[u8],
     headers: Option<&[(&'static str, String)]>,
 ) -> Result<(StatusCode, Vec<u8>)> {
-    let connector = HttpsConnector::new();
-
-    let client = Client::builder().build(connector);
-
     let uri: Uri = url.parse()?;
-
-    let mut request = Request::post(uri).body(Body::from(body.to_vec()))?;
-
-    if let Some(v) = headers {
-        let hs = request.headers_mut();
-        for (h, v) in v.iter() {
-            hs.insert(*h, HeaderValue::from_str(v)?);
-        }
-    }
-
-    let response = client.request(request).await?;
-    let status_code = response.status();
-    let bytes = body::to_bytes(response.into_body()).await?;
-    Ok((status_code, bytes.into()))
+    let request = Request::post(uri).body(Full::from(body.to_vec()))?;
+    send_http_request(request, headers).await
 }
 pub async fn http_get_ret_string(
     url: &str,
@@ -140,13 +132,17 @@ pub async fn http_get(
     body: &[u8],
     headers: Option<&[(&'static str, String)]>,
 ) -> Result<(StatusCode, Vec<u8>)> {
-    let connector = HttpsConnector::new();
-
-    let client = Client::builder().build(connector);
-
     let uri: Uri = url.parse()?;
+    let request = Request::get(uri).body(Full::from(body.to_vec()))?;
+    send_http_request(request, headers).await
+}
 
-    let mut request = Request::get(uri).body(Body::from(body.to_vec()))?;
+async fn send_http_request(
+    mut request: Request<Full<Bytes>>,
+    headers: Option<&[(&'static str, String)]>,
+) -> Result<(StatusCode, Vec<u8>)> {
+    let connector = HttpsConnector::new();
+    let client = Client::builder(TokioExecutor::new()).build(connector);
 
     if let Some(v) = headers {
         let hs = request.headers_mut();
@@ -157,6 +153,6 @@ pub async fn http_get(
 
     let response = client.request(request).await?;
     let status_code = response.status();
-    let bytes = body::to_bytes(response.into_body()).await?;
-    Ok((status_code, bytes.into()))
+    let body = response.into_body().collect().await?.to_bytes().to_vec();
+    Ok((status_code, body))
 }

@@ -1,19 +1,19 @@
-use std::{
-    fmt::Debug,
-    future::Future,
-    net::SocketAddr,
-    pin::Pin,
-    sync::Arc,
-    task::{Context, Poll},
-};
+use std::{fmt::Debug, future::Future, net::SocketAddr, pin::Pin, sync::Arc};
 
-use anyhow::{anyhow, Error, Result};
+use anyhow::{anyhow, Result};
 use async_trait::async_trait;
+use bytes::Bytes;
+use http_body_util::{BodyExt, Full};
 use hyper::{
-    body::to_bytes, http::response::Builder, service::Service, Body, Request, Response, Server,
+    body::Incoming,
+    server::conn::http1,
+    service::{service_fn, Service},
+    Request, Response,
 };
+use hyper_util::rt::TokioIo;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use tokio::net::TcpListener;
 
 use crate::{RPCError, RPCRequest, RPCResponse};
 
@@ -82,26 +82,26 @@ struct HandleHttp<H> {
     handle: Arc<H>,
 }
 
-impl<H> Service<Request<Body>> for HandleHttp<H>
+impl<H> Service<Request<Incoming>> for HandleHttp<H>
 where
     H: Handle + Send + Sync + 'static,
     H::Request: Debug,
 {
-    type Error = Error;
+    type Response = Response<Full<Bytes>>;
+    type Error = anyhow::Error;
+    type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
 
-    type Response = Response<Body>;
-
-    type Future = Pin<Box<dyn Future<Output = Result<Self::Response>> + Send>>;
-
-    fn poll_ready(&mut self, _cx: &mut Context<'_>) -> Poll<std::result::Result<(), Self::Error>> {
-        Poll::Ready(Ok(()))
-    }
-
-    fn call(&mut self, req: Request<Body>) -> Self::Future {
+    fn call(&self, request: Request<Incoming>) -> Self::Future {
         let handle = self.handle.clone();
 
         let r = async move {
-            let req_body = to_bytes(req.into_body()).await?;
+            let req_body = request
+                .into_body()
+                .collect()
+                .await
+                .map_err(|e| anyhow!("{e}"))?
+                .to_bytes()
+                .to_vec();
 
             log::debug!("Request Body: {:?}", req_body);
 
@@ -109,18 +109,18 @@ where
 
             let body = if req_body.is_object() {
                 let r = _handle(req_body, handle.as_ref()).await?;
-                Body::from(serde_json::to_string(&r)?)
+                serde_json::to_string(&r)?
             } else if req_body.is_array() {
                 let r = _batch_handle(req_body, handle.as_ref()).await?;
-                Body::from(serde_json::to_string(&r)?)
+                serde_json::to_string(&r)?
             } else {
                 return Err(anyhow!("Unsupport type"));
             };
             log::debug!("Response Body: {:?}", body);
 
-            let resp = Builder::new()
+            let resp = Response::builder()
                 .header("Content-Type", "application/json")
-                .body(body)?;
+                .body(Full::new(Bytes::from(body)))?;
 
             Ok(resp)
         };
@@ -129,40 +129,28 @@ where
     }
 }
 
-struct MakeSvc<H> {
-    handle: Arc<H>,
-}
-
-impl<T, H> Service<T> for MakeSvc<H>
-where
-    H: Send + Sync + 'static,
-{
-    type Response = HandleHttp<H>;
-    type Error = hyper::Error;
-    type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
-
-    fn poll_ready(&mut self, _: &mut Context) -> Poll<Result<(), Self::Error>> {
-        Poll::Ready(Ok(()))
-    }
-
-    fn call(&mut self, _: T) -> Self::Future {
-        let handle = self.handle.clone();
-        let fut = async move { Ok(HandleHttp { handle }) };
-        Box::pin(fut)
-    }
-}
-
 pub async fn serve<H>(addr: &SocketAddr, handle: H) -> Result<()>
 where
     H: Handle + Send + Sync + 'static,
     H::Request: Debug,
 {
-    let server = Server::bind(addr).serve(MakeSvc {
-        handle: Arc::new(handle),
-    });
+    let listener = TcpListener::bind(addr).await?;
+    println!("Listening on http://{}", addr);
 
-    if let Err(e) = server.await {
-        eprintln!("server error: {}", e);
+    let handle = Arc::new(handle);
+
+    loop {
+        let (stream, _) = listener.accept().await?;
+        let io = TokioIo::new(stream);
+
+        let handle = handle.clone();
+        let service = service_fn(move |req| {
+            let value = handle.clone();
+            async move { HandleHttp { handle: value }.call(req).await }
+        });
+
+        if let Err(err) = http1::Builder::new().serve_connection(io, service).await {
+            println!("Error serving connection: {:?}", err);
+        }
     }
-    Ok(())
 }
