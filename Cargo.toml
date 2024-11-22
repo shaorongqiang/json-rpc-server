@@ -1,13 +1,13 @@
 [package]
 name = "json-rpc-server"
 homepage = "https://github.com/shaorongqiang/json-rpc-server.git"
-version = "0.1.1"
+version = "1.0.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 description = "A framework for http server"
 
 [dependencies]
-anyhow = "1.0.72"
+anyhow = "1.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 async-trait = "0.1"
